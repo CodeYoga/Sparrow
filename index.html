@@ -6,6 +6,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1a1f2e">
 <title>Sparrow – Bookmark Manager</title>
+<link rel="manifest" href="manifest.json">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
 <style>
   :root{--bg:#1a1f2e;--surface:#222840;--surface2:#2a3050;--border:#323860;--accent:#5b8cff;--accent2:#ff6b6b;--text:#e8ecf7;--text2:#8892b0;--text3:#4a5480;--success:#43d98c;--radius:16px;--radius-sm:10px;--shadow:0 8px 32px rgba(0,0,0,0.4)}
@@ -93,8 +94,12 @@
   .toast.error{border-color:var(--accent2);color:var(--accent2)}
   .toast.info{border-color:var(--accent);color:var(--accent)}
   .info-box{background:var(--surface2);border-radius:var(--radius-sm);padding:14px;font-size:14px;color:var(--text2);line-height:1.8}
+  /* Share received banner */
+  .share-banner{background:linear-gradient(135deg,#5b8cff22,#a78bfa22);border:1px solid var(--accent);border-radius:var(--radius);padding:14px 16px;margin:4px 16px 8px;display:flex;align-items:center;gap:12px}
+  .share-banner-text{flex:1;font-size:13px;color:var(--text2);line-height:1.5}
+  .share-banner-text strong{color:var(--text);display:block;margin-bottom:2px}
   @media(min-width:600px){
-    .main,.header,.topics-strip,.stats-bar,.gdrive-banner{max-width:640px;margin-left:auto;margin-right:auto}
+    .main,.header,.topics-strip,.stats-bar,.gdrive-banner,.share-banner{max-width:640px;margin-left:auto;margin-right:auto}
     .overlay{align-items:center}
     .sheet{border-radius:24px;margin-bottom:20px}
   }
@@ -115,6 +120,15 @@
   <div class="search-wrap">
     <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
     <input id="searchInput" type="text" placeholder="Search bookmarks & notes…" oninput="renderAll()">
+  </div>
+</div>
+
+<!-- Shared URL banner — shown when app is opened via Share -->
+<div class="share-banner" id="shareBanner" style="display:none">
+  <div style="font-size:22px">🔗</div>
+  <div class="share-banner-text">
+    <strong id="shareBannerTitle">Saving shared link…</strong>
+    <span id="shareBannerUrl" style="font-size:12px;color:var(--text3);word-break:break-all"></span>
   </div>
 </div>
 
@@ -204,20 +218,14 @@
 
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
-// ─────────────────────────────────────────────────────────────────
-// SETUP: Replace YOUR_GOOGLE_CLIENT_ID with your OAuth 2.0 Client ID
-// Instructions: see the README section at the bottom of this file
-// or visit https://console.cloud.google.com
-// ─────────────────────────────────────────────────────────────────
-const CLIENT_ID = '80105916472-ivk6onepeld786a3oih8kdp4s64klmcb.apps.googleusercontent.com';
+const CLIENT_ID = 'YOUR_GOOGLE_CLIENT_ID';
 const SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
-const DATA_FILE = 'Sparrow-data.json';
+const DATA_FILE = 'sparrow-data.json';
 const COLORS = ['#5b8cff','#ff6b6b','#43d98c','#ffd166','#a78bfa','#f472b6','#34d399','#fb923c','#38bdf8','#e879f9'];
 
 let bookmarks=[], topics=[], selectedTopic='all', editingId=null, deleteTargetId=null;
 let selectedColor=COLORS[0], accessToken=null, driveFileId=null, syncTimer=null, saving=false;
 
-// ── UTILS ─────────────────────────────────────
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const getDomain=url=>{try{return new URL(url).hostname.replace('www.','')}catch{return url}};
 const getFavicon=url=>{try{return`https://www.google.com/s2/favicons?domain=${new URL(url).hostname}&sz=32`}catch{return null}};
@@ -228,13 +236,13 @@ const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 
 function toast(msg,type='success'){
   const el=document.getElementById('toast');
-  el.textContent=msg; el.className='toast '+type+' show';
+  el.textContent=msg;el.className='toast '+type+' show';
   setTimeout(()=>el.className='toast',2500);
 }
 function setSyncDot(s){
   const d=document.getElementById('syncDot');
   d.className='sync-dot '+(s==='syncing'?'syncing':s==='synced'?'synced':s==='error'?'error':'');
-  d.title={syncing:'Saving to Drive…',synced:'Saved to Drive ✓',error:'Drive sync error — data saved locally',idle:'Not connected to Drive'}[s]||'';
+  d.title={syncing:'Saving to Drive…',synced:'Saved to Drive ✓',error:'Drive sync error',idle:'Not connected to Drive'}[s]||'';
 }
 
 // ── LOCAL STORAGE ─────────────────────────────
@@ -246,6 +254,46 @@ function loadLocal(){
   try{const t=localStorage.getItem('mltp');if(t)topics=JSON.parse(t);}catch{}
 }
 
+// ── WEB SHARE TARGET ──────────────────────────
+function checkSharedUrl(){
+  const params=new URLSearchParams(window.location.search);
+  const sharedUrl=params.get('url')||params.get('text');
+  const sharedTitle=params.get('title')||'';
+  if(!sharedUrl) return;
+
+  // Clean the URL from the address bar without reloading
+  window.history.replaceState({},'',window.location.pathname);
+
+  // Show banner briefly
+  const banner=document.getElementById('shareBanner');
+  const bannerTitle=document.getElementById('shareBannerTitle');
+  const bannerUrlEl=document.getElementById('shareBannerUrl');
+  bannerTitle.textContent=sharedTitle||getDomain(sharedUrl);
+  bannerUrlEl.textContent=sharedUrl;
+  banner.style.display='flex';
+
+  // Auto-save the bookmark
+  let url=sharedUrl.trim();
+  if(!/^https?:\/\//i.test(url)) url='https://'+url;
+  const title=sharedTitle.trim()||getDomain(url);
+
+  if(!bookmarks.find(b=>b.url===url)){
+    bookmarks.unshift({id:uid(),url,title,note:'',topicId:'',createdAt:Date.now()});
+    scheduleSave();renderAll();
+    toast('Bookmark saved from share ✓');
+  } else {
+    toast('Already saved!','info');
+  }
+
+  // Hide banner after 4s
+  setTimeout(()=>banner.style.display='none', 4000);
+}
+
+// ── SERVICE WORKER ────────────────────────────
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+
 // ── GOOGLE AUTH ───────────────────────────────
 function initGoogleAuth(){
   if(typeof google==='undefined'||!google.accounts){setTimeout(initGoogleAuth,600);return;}
@@ -253,11 +301,10 @@ function initGoogleAuth(){
   if(tok){accessToken=tok;onSignedIn(false);}
   else{document.getElementById('gdriveBanner').style.display='flex';setSyncDot('idle');}
 }
-
 function signIn(){
   if(typeof google==='undefined'){toast('Google not ready','error');return;}
   google.accounts.oauth2.initTokenClient({
-    client_id:CLIENT_ID, scope:SCOPES,
+    client_id:CLIENT_ID,scope:SCOPES,
     callback:r=>{
       if(r.error){toast('Sign-in failed','error');return;}
       accessToken=r.access_token;
@@ -266,31 +313,20 @@ function signIn(){
     }
   }).requestAccessToken();
 }
-
 function onSignedIn(fresh){
   document.getElementById('gdriveBanner').style.display='none';
   document.getElementById('driveBtn').textContent='✅';
   setSyncDot('syncing');
-  if(fresh) toast('Connected to Google Drive ✓','info');
+  if(fresh)toast('Connected to Google Drive ✓','info');
   loadFromDrive();
 }
-
 function handleDriveBtn(){accessToken?showDriveInfo():signIn();}
-
 function showDriveInfo(){
   document.getElementById('driveInfoBody').innerHTML=`
-    <div class="info-box">
-      ✅ Connected to Google Drive<br>
-      📁 Saved to: <strong style="color:var(--text)">App Data folder</strong><br>
-      🔄 Auto-saves after every change<br>
-      🔒 Private — only Sparrow can access it
-    </div>
-    <div style="margin-top:12px">
-      <button class="btn-danger" style="width:100%;margin-top:0" onclick="signOut()">Disconnect Drive</button>
-    </div>`;
+    <div class="info-box">✅ Connected to Google Drive<br>📁 Saved to: <strong style="color:var(--text)">App Data folder</strong><br>🔄 Auto-saves after every change<br>🔒 Private — only Sparrow can access it</div>
+    <div style="margin-top:12px"><button class="btn-danger" style="width:100%" onclick="signOut()">Disconnect Drive</button></div>`;
   openOverlay('driveInfoOverlay');
 }
-
 function signOut(){
   accessToken=null;driveFileId=null;
   sessionStorage.removeItem('ml_token');
@@ -313,18 +349,13 @@ async function loadFromDrive(){
       const fr=await fetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`,
         {headers:{Authorization:'Bearer '+accessToken}});
       const data=await fr.json();
-      bookmarks=data.bookmarks||[];
-      topics=data.topics||[];
-      saveLocal();setSyncDot('synced');
-      toast('Loaded from Drive ✓');
+      bookmarks=data.bookmarks||[];topics=data.topics||[];
+      saveLocal();setSyncDot('synced');toast('Loaded from Drive ✓');
     } else {
       loadLocal();setSyncDot('synced');
-      if(bookmarks.length||topics.length) saveToDrive();
+      if(bookmarks.length||topics.length)saveToDrive();
     }
-  } catch(e){
-    console.error(e);loadLocal();setSyncDot('error');
-    toast('Drive load failed – using local data','error');
-  }
+  }catch(e){console.error(e);loadLocal();setSyncDot('error');toast('Drive load failed','error');}
   renderAll();
 }
 
@@ -336,7 +367,6 @@ function scheduleSave(){
   clearTimeout(syncTimer);
   syncTimer=setTimeout(saveToDrive,1500);
 }
-
 async function saveToDrive(){
   if(!accessToken||saving)return;
   saving=true;
@@ -344,11 +374,8 @@ async function saveToDrive(){
   try{
     if(driveFileId){
       await fetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`,{
-        method:'PATCH',
-        headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},
-        body:payload
-      });
-    } else {
+        method:'PATCH',headers:{Authorization:'Bearer '+accessToken,'Content-Type':'application/json'},body:payload});
+    }else{
       const form=new FormData();
       form.append('metadata',new Blob([JSON.stringify({name:DATA_FILE,parents:['appDataFolder']})],{type:'application/json'}));
       form.append('file',new Blob([payload],{type:'application/json'}));
@@ -357,16 +384,12 @@ async function saveToDrive(){
       driveFileId=(await res.json()).id;
     }
     setSyncDot('synced');
-  } catch(e){
-    console.error(e);setSyncDot('error');
-    toast('Drive save failed – kept locally','error');
-  }
+  }catch(e){console.error(e);setSyncDot('error');toast('Drive save failed','error');}
   saving=false;
 }
 
 // ── RENDER ────────────────────────────────────
 function renderAll(){renderTopicsStrip();renderBookmarks();renderStats();}
-
 function renderTopicsStrip(){
   const strip=document.getElementById('topicsStrip');
   const all=selectedTopic==='all';
@@ -377,7 +400,6 @@ function renderTopicsStrip(){
   });
   strip.innerHTML=h;
 }
-
 function renderStats(){
   const q=document.getElementById('searchInput').value.trim();
   const f=getFiltered();
@@ -386,7 +408,6 @@ function renderStats(){
   const label=selectedTopic!=='all'?getTopicById(selectedTopic)?.name:'all';
   bar.textContent=`${f.length} bookmark${f.length!==1?'s':''} ${q?`matching "${q}"`:`in ${label}`}`;
 }
-
 function getFiltered(){
   const q=document.getElementById('searchInput').value.trim().toLowerCase();
   return bookmarks.filter(b=>{
@@ -395,7 +416,6 @@ function getFiltered(){
     return tm&&sm;
   });
 }
-
 function renderBookmarks(){
   const list=document.getElementById('mainList');
   const filtered=getFiltered();
@@ -411,19 +431,7 @@ function renderBookmarks(){
     const faviconHtml=fav?`<img src="${fav}" onerror="this.parentElement.textContent='🔗'" alt="">`:'🔗';
     const noteHtml=b.note?`<div class="card-note">📝 ${esc(b.note)}</div>`:'';
     const topicHtml=topic?`<span class="topic-badge" style="background:${topic.color}22;color:${topic.color};border:1px solid ${topic.color}44">${esc(topic.name)}</span>`:'';
-    return`<div class="card" ${borderStyle}>
-      <div class="card-top">
-        <div class="favicon">${faviconHtml}</div>
-        <div class="card-meta"><div class="card-title">${esc(b.title)}</div><div class="card-url">${esc(getDomain(b.url))}</div></div>
-        <div class="card-actions">
-          <a href="${esc(b.url)}" target="_blank" rel="noopener" class="btn-sm">↗</a>
-          <button class="btn-sm" onclick="openEdit('${b.id}')">✏️</button>
-          <button class="btn-sm" onclick="askDelete('${b.id}')">🗑</button>
-        </div>
-      </div>
-      ${noteHtml}
-      <div class="card-footer">${topicHtml}<span class="card-date">${fmtDate(b.createdAt)}</span></div>
-    </div>`;
+    return`<div class="card" ${borderStyle}><div class="card-top"><div class="favicon">${faviconHtml}</div><div class="card-meta"><div class="card-title">${esc(b.title)}</div><div class="card-url">${esc(getDomain(b.url))}</div></div><div class="card-actions"><a href="${esc(b.url)}" target="_blank" rel="noopener" class="btn-sm">↗</a><button class="btn-sm" onclick="openEdit('${b.id}')">✏️</button><button class="btn-sm" onclick="askDelete('${b.id}')">🗑</button></div></div>${noteHtml}<div class="card-footer">${topicHtml}<span class="card-date">${fmtDate(b.createdAt)}</span></div></div>`;
   }).join('');
 }
 
@@ -431,8 +439,6 @@ function renderBookmarks(){
 function openOverlay(id){document.getElementById(id).classList.add('open');}
 function closeOverlay(id){document.getElementById(id).classList.remove('open');}
 function closeOnBg(e,id){if(e.target===document.getElementById(id))closeOverlay(id);}
-
-// ── TOPIC FILTER ─────────────────────────────
 function selectTopic(id){selectedTopic=id;renderAll();}
 
 // ── ADD / EDIT ────────────────────────────────
@@ -459,14 +465,14 @@ function populateTopicSelect(sel){
 function saveBookmark(){
   let url=document.getElementById('fUrl').value.trim();
   if(!url){toast('Please enter a URL','error');return;}
-  if(!/^https?:\/\//i.test(url)) url='https://'+url;
+  if(!/^https?:\/\//i.test(url))url='https://'+url;
   const title=document.getElementById('fTitle').value.trim()||getDomain(url);
   const note=document.getElementById('fNote').value.trim();
   const topicId=document.getElementById('fTopic').value;
   if(editingId){
     bookmarks=bookmarks.map(b=>b.id===editingId?{...b,url,title,note,topicId}:b);
     toast('Bookmark updated ✓');
-  } else {
+  }else{
     bookmarks.unshift({id:uid(),url,title,note,topicId,createdAt:Date.now()});
     toast('Bookmark saved! ✓');
   }
@@ -480,7 +486,7 @@ function confirmDelete(){
   scheduleSave();closeOverlay('confirmOverlay');toast('Deleted','error');renderAll();
 }
 
-// ── TOPICS MGMT ──────────────────────────────
+// ── TOPICS ────────────────────────────────────
 function openTopics(){renderColorRow();renderTopicsList();openOverlay('topicsOverlay');}
 function renderColorRow(){
   document.getElementById('colorRow').innerHTML=COLORS.map(c=>
@@ -499,12 +505,7 @@ function addTopic(){
 function renderTopicsList(){
   const el=document.getElementById('topicsList');
   if(!topics.length){el.innerHTML='<p style="color:var(--text3);font-size:14px;text-align:center;padding:12px">No topics yet — create one above</p>';return;}
-  el.innerHTML=topics.map(t=>`<div class="topic-row">
-    <div class="topic-dot" style="background:${t.color}"></div>
-    <div class="topic-row-name">${esc(t.name)}</div>
-    <div class="topic-count">${bmCount(t.id)} bm</div>
-    <button class="btn-sm" onclick="deleteTopic('${t.id}')">✕</button>
-  </div>`).join('');
+  el.innerHTML=topics.map(t=>`<div class="topic-row"><div class="topic-dot" style="background:${t.color}"></div><div class="topic-row-name">${esc(t.name)}</div><div class="topic-count">${bmCount(t.id)} bm</div><button class="btn-sm" onclick="deleteTopic('${t.id}')">✕</button></div>`).join('');
 }
 function deleteTopic(id){
   topics=topics.filter(t=>t.id!==id);
@@ -535,12 +536,7 @@ function parseImport(html){
   });
   bookmarks.sort((a,b)=>b.createdAt-a.createdAt);
   scheduleSave();renderAll();
-  document.getElementById('importPreview').innerHTML=`<div class="info-box" style="text-align:center">
-    <div style="font-size:28px;margin-bottom:8px">${imported>0?'✅':'⚠️'}</div>
-    <strong style="color:var(--text)">${imported} bookmark${imported!==1?'s':''} imported</strong><br>
-    ${skipped>0?`<span style="font-size:13px">${skipped} duplicates skipped</span><br>`:''}
-    <span style="font-size:13px">Use ✏️ on each card to assign topics</span>
-  </div>`;
+  document.getElementById('importPreview').innerHTML=`<div class="info-box" style="text-align:center"><div style="font-size:28px;margin-bottom:8px">${imported>0?'✅':'⚠️'}</div><strong style="color:var(--text)">${imported} bookmark${imported!==1?'s':''} imported</strong><br>${skipped>0?`<span style="font-size:13px">${skipped} duplicates skipped</span><br>`:''}<span style="font-size:13px">Use ✏️ on each card to assign topics</span></div>`;
   toast(`Imported ${imported} bookmarks ✓`);
 }
 const zone=document.getElementById('importZone');
@@ -555,43 +551,8 @@ zone.addEventListener('drop',e=>{
 // ── INIT ──────────────────────────────────────
 loadLocal();
 renderAll();
+checkSharedUrl();
 initGoogleAuth();
-
-/*
-═══════════════════════════════════════════════════════════
-  HOW TO SET UP GOOGLE DRIVE SYNC
-═══════════════════════════════════════════════════════════
-
-  1. Host this file somewhere with a real URL
-     (e.g. GitHub Pages — free and easy)
-     → https://pages.github.com
-
-  2. Go to https://console.cloud.google.com
-     → Create a new project (e.g. "Sparrow")
-
-  3. Enable "Google Drive API"
-     → APIs & Services → Library → search "Drive API" → Enable
-
-  4. Create OAuth credentials
-     → APIs & Services → Credentials
-     → Create Credentials → OAuth 2.0 Client ID
-     → Type: Web application
-     → Authorised JavaScript origins: your hosted URL
-       (e.g. https://yourname.github.io)
-
-  5. Copy the Client ID and paste it at the top of this
-     script where it says: const CLIENT_ID = 'YOUR_GOOGLE_CLIENT_ID'
-
-  6. OAuth consent screen → Add yourself as a Test User
-
-  7. Done! Open the hosted file, tap ☁️ and sign in.
-     Your data will now sync across all devices automatically.
-
-NOTE: Until you set up a Client ID, the app works perfectly
-fine as a local tool — data is saved in the browser's
-localStorage and survives refreshes on the same device/browser.
-═══════════════════════════════════════════════════════════
-*/
 </script>
 </body>
 </html>
