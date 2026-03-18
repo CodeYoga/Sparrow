@@ -16,7 +16,7 @@
     }
   ],
   "share_target": {
-    "action": "/",
+    "action": "https://codeyoga.github.io/Sparrow/",
     "method": "GET",
     "params": {
       "title": "title",
